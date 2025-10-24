@@ -1,0 +1,2 @@
+id_hex,bus,signal,notes
+0x180,CHASSIS,EngineRPM,Teensy synth frame
