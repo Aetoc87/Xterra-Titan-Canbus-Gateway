@@ -1,6 +1,6 @@
 # Xterra ↔ Titan CAN Bus Gateway (Teensy 4.1 Edition)
 
-> CAN gateway allowing a 2nd-gen Xterra chassis to communicate with a Titan drivetrain/ECM.
+> CAN gateway allowing a Pre-2008 2nd-gen Xterra chassis to communicate with a Post 2008 Titan drivetrain/ECM.
 
 ## ⚙️ Hardware
 
