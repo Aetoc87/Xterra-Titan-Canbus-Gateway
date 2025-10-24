@@ -93,14 +93,17 @@ xterra-titan-canbus-gateway/
 
 ## 🧾 CAN Messages of Interest
 
-| ID | Direction | Purpose / Signal | Status |
-|----|------------|------------------|---------|
-| `0x180` | ECM → Chassis | Engine RPM broadcast | Working / synthesized | UNCONFIRMED
-| `0x29E` | ECM → Chassis | ECM status / MIL | Under test |
-| `0x160` | ECM → Chassis | Engine load / torque | Observed |
-| `0x6F7` | ECM → Chassis | Diagnostic heartbeat | Observed |
+| ID | Direction | Suspected Purpose | Notes / Status |
+|----|------------|------------------|----------------|
+| `0x180` | ECM → Chassis | Possible Engine RPM | Seen changing during rev sweep; not verified |
+| `0x29E` | ECM → Chassis | Possible ECM status / MIL | Appears when MIL active; under review |
+| `0x160` | ECM → Chassis | Possibly torque/load or throttle data | Frequently active; contents vary with throttle |
+| `0x6F7` | ECM → Chassis | Diagnostic or heartbeat | Low-frequency, constant frame |
+| `0x182`, `0x285` | ECM ↔ ABS/TCCM | Unknown | Observed during motion and fault logging; analysis ongoing |
 
-*(Values above based on Titan ECM observation and log correlation.)*
+**Summary:**  
+No frame has yet been confirmed to carry RPM, steering angle, or VDC handshake data.  
+Identification efforts are ongoing using rev-sweep, idle, and ABS fault logs.
 
 ---
 
@@ -139,4 +142,5 @@ MIT License © 2025 Xterra-Titan CAN Gateway Contributors
 
 This project is open for collaboration!
 If you’re doing a similar Nissan swap or reverse-engineering CAN messages, feel free to fork and submit pull requests.
+
 Let’s make Titan drivetrain swaps easier for every Xterra owner.
