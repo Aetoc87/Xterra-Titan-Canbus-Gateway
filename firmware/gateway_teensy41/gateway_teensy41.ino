@@ -15,7 +15,7 @@ void setup() {
   powerCAN.begin();
   chassisCAN.setBaudRate(CHASSIS_BAUD);
   powerCAN.setBaudRate(POWERTRAIN_BAUD);
-  Serial.println("Teensy 4.1 gateway online");
+  Serial.println("Pistonhead CANBUS gateway online");
 }
 
 void loop() {
