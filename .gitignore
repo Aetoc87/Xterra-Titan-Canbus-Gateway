@@ -1,5 +1,0 @@
-.pio/
-.build/
-*.bin
-*.elf
-/data/logs/*.log
