@@ -1,291 +1,158 @@
-<<<<<<< HEAD
-# 🛠️ Xterra ↔ Titan CAN Bus Gateway (Teensy 4.1 Edition)
+# Xterra ↔ Titan CAN Bus Gateway (Teensy 4.1)
 
-> A dual-bus CAN gateway that allows a **2nd-Gen Nissan Xterra** chassis to operate with a **Nissan Titan ECM and drivetrain**.  
-> Built around a **Teensy 4.1** microcontroller and dual **SN65HVD230** CAN transceivers.
+A single-bus CAN gateway/translator that lets a **2005 Nissan Xterra (N50, manual)**
+chassis run with a **2014 Nissan Titan VK56DE ECM**. Built on a **Teensy 4.1**
+with **FlexCAN_T4**.
 
----
+This repo documents an in-progress reverse-engineering effort. Findings are
+labeled **confirmed** (verified against first-party captures or the factory
+service manual) or **provisional** (working hypothesis, not yet verified). It is
+shared so other Nissan swap builders don't have to start from zero.
 
-## ⚙️ Project Goals
-
-- Integrate a **Titan VK56DE ECM** with the **Xterra chassis** electronics.  
-- Emulate or forward key CAN messages (RPM, MIL, steering angle, etc.) required by ABS, VDC, and other modules.  
-- Maintain OEM-style reliability, termination, and signal integrity.  
-- Provide open, well-documented firmware for other Nissan CAN swap enthusiasts.
-
----
-
-## 🧩 Hardware Overview
-
-| Component | Purpose | Notes |
-|------------|----------|-------|
-| **Teensy 4.1** | Core MCU | 3 native CAN controllers, used here with CAN1 + CAN2 |
-| **SN65HVD230 (Waveshare)** ×2 | CAN transceivers | 3.3 V logic, on-board 120 Ω resistor |
-| **Power Supply** | 12 V → 5 V/3.3 V | Use clean regulated power with reverse-polarity + TVS protection |
-
-### Pin assignments (Teensy 4.1)
-| Bus | CAN TX | CAN RX | Transceiver |
-|------|--------|--------|--------------|
-| CHASSIS | 22 | 23 | SN65HVD230 #1 |
-| POWERTRAIN | 1 | 0 | SN65HVD230 #2 |
+> Status: drivable. Chassis communication faults cleared, 2WD↔4HI working,
+> ECM kept out of lost-TCM comms codes. Open items: tach/RPM scaling, coolant
+> temp decode, 4LO engagement, tune-level throttle limit. See **Project Status** below.
 
 ---
 
-## 🔌 CAN Bus Topology
+## Architecture — single bus, no split required
 
-The factory CAN line between the **IPDM** and **ECM** is **split near the firewall**, isolating the two networks:
-[Cluster, ABS, TCCM, IPDM] --120Ω-- [SN65HVD230 #1] ⇄ CAN1 ⇄ Teensy 4.1 ⇄ CAN2 ⇄ [SN65HVD230 #2] --120Ω-- [ECM, IPDM lead]
+The most important finding, and the biggest change from earlier versions of this
+project:
 
+- The **Titan VK56DE ECM broadcasts on the 0x1xx ID range.**
+- The **Xterra VQ40 chassis modules** (combination meter, ABS, TCCU/transfer)
+  listen on the **0x23x range.**
+- These ranges **do not overlap.** The ECM and chassis can therefore share **one
+  physical CAN bus.** The Teensy simply **adds the frames the chassis expects but
+  the Titan ECM never sends.**
 
-- **CHASSIS bus:** all body modules remain connected to IPDM and terminate at the IPDM and gateway transceiver.  
-- **POWERTRAIN bus:** the Titan ECM and IPDM harness stub form a second segment, terminated at the ECM and the gateway transceiver.  
+There is **no need to physically split the bus** into separate chassis/powertrain
+segments (an earlier design assumption that has since been dropped). A single
+transceiver tapping one 500 kbit/s bus is sufficient. The gateway is an
+**injector/translator on one bus**, not a two-port bridge.
 
-This creates **two properly terminated 60 Ω CAN networks**, bridged in software by the Teensy.
-
----
-
-## 📡 Termination & Wiring Notes
-
-| Mode | SN65HVD230 Resistor | Description |
-|------|----------------------|-------------|
-| **Sniffer / injector** | ❌ *Removed* | When connected in parallel to the OEM bus (ECM + IPDM handle termination) |
-| **Gateway (split-bus)** | ✅ *Installed* | Each SN65HVD230 acts as one physical end of its bus segment |
-
-**Grounding:** tie both transceiver grounds and the Teensy GND together, and bond to vehicle chassis at a single point.  
-Use twisted pairs for CANH/CANL (≈ 120 Ω impedance) and keep leads under ~20 cm to the splice points.
-
----
-
-## 🧰 Firmware Overview
-
-Firmware is written for **Teensy 4.1** using the **FlexCAN_T4** library.
-
-### Main sketches
-| Path | Function |
-|------|-----------|
-| `firmware/gateway_teensy41/gateway_teensy41.ino` | Dual-bus gateway core (bridges chassis ↔ powertrain) | WIP
-| `firmware/utils/can_sniffer.ino` | Passive CAN sniffer for logging / ID discovery |
-| `firmware/test_injection/test_injection.ino` | Injector used to reproduce and clear communication faults during testing |
-
-Typical bus speed: **500 kbit/s** on both networks.
+```
+        ┌────────────────────────────────────────────┐
+        │              single 500k CAN bus            │
+        │  Titan ECM (0x1xx)   Xterra chassis (0x23x)  │
+        │        │                     │              │
+        │        └───────── + ─────────┘              │
+        │                   │                         │
+        │             Teensy 4.1 (adds 0x23x frames   │
+        │             the chassis needs)              │
+        └────────────────────────────────────────────┘
+```
 
 ---
 
-## 📂 Repository Layout
-xterra-titan-canbus-gateway/
+## Hardware
+
+| Component        | Purpose      | Notes                                            |
+| ---------------- | ------------ | ------------------------------------------------ |
+| Teensy 4.1       | Core MCU     | Native CAN controllers; this project uses CAN1   |
+| CAN transceiver  | Bus I/O      | 3.3 V logic (e.g. SN65HVD230); 500 kbit/s        |
+| Clean 12V→5V/3V3 | Power        | Reverse-polarity + TVS protection recommended    |
+
+Bus speed is **500 kbit/s**. Termination follows normal CAN practice: the bus
+should see ~60 Ω overall (two 120 Ω terminators). When tapping in parallel with
+the existing OEM bus that is already terminated at the ECM and a chassis module,
+the Teensy's transceiver should **not** add another 120 Ω terminator.
+
+---
+
+## Firmware
+
+All sketches target **Teensy 4.1 / FlexCAN_T4**, CAN1, 500 kbit/s.
+
+| Path                                          | Function                                                                 |
+| --------------------------------------------- | ------------------------------------------------------------------------ |
+| `firmware/gateway/gateway.ino`                | **Working gateway.** Presence frames + 0x23D engine data (advancing counter) + 0x251 neutral TCM spoof. Clears chassis comms faults, enables 2WD↔4HI. |
+| `firmware/sniffer_freetext/sniffer_freetext.ino` | **Listen-only logger** with free-text markers (type any text + Enter to stamp the log). Used for capture sessions. Transmits nothing. |
+| `firmware/tcm_spoof_test/tcm_spoof_test.ino`  | Staged 0x251 TCM gear-status spoof tester (modes A/B/C, gear toggle, rate). |
+| `firmware/tach_target_test/tach_target_test.ino` | RPM-injection tester for finding the cluster/TCCU engine-speed frame/scale. |
+
+See **`docs/SIGNALS.md`** for the CAN ID map and **`docs/GATEWAY_DESIGN.md`** for
+how the gateway is structured.
+
+---
+
+## ⚠️ Safety note on the TCM spoof
+
+The `0x251` neutral gear-status spoof in the gateway exists to clear the Titan
+ECM's *lost-communication-with-TCM* code. It is **only appropriate because this
+is a manual swap with no automatic transmission present.** It defeats a check
+intended to coordinate with an A/T. **Do not use the TCM spoof on a vehicle that
+still has an automatic transmission.**
+
+The spoof clears the comms code but **does not** restore full throttle. The
+remaining throttle/torque limit is **tune-level** (addressed via UpRev/Osiris),
+not a CAN problem.
+
+---
+
+## Project status
+
+**Confirmed (verified):**
+- Single-bus architecture viable — Titan 0x1xx vs Xterra 0x23x ranges don't overlap.
+- Titan engine RPM on `0x180` bytes 0–1, big-endian, 0.125 RPM/LSB (rev-sweep confirmed); mirrored on `0x1F9` bytes 2–3.
+- Chassis comms faults (U1000) clear when the expected 0x23x presence frames are injected.
+- 2WD↔4HI shifting works once 0x23D is provided with an advancing counter.
+- `0x251` neutral replay clears the ECM lost-TCM comms code (manual swap).
+- 4LO permit logic (per factory TF section): requires vehicle stopped, engine running, neutral + clutch + brake; vehicle speed reaches the TCCU via CAN from ABS; engine speed via CAN from ECM. Neutral switch circuit and wait-detection switch verified good on the build.
+
+**Open / in progress:**
+- **Tach/RPM scaling:** the exact 0x23x frame/byte/scale the cluster and TCCU read for engine speed is not yet confirmed. The TCCU currently reads a frozen/implausible engine speed from injected data. Pending a stock-VQ40 (Frontier) rev-sweep capture.
+- **Coolant temp:** byte/scale for the cluster temp gauge not yet decoded. Pending Frontier cold-start warm-up capture.
+- **4LO engagement:** does not engage yet (motor not commanded). Engine-speed signal to the TCCU is the leading suspect among remaining inputs; 4LO switch circuit on the rewired connector still to be verified.
+- **Throttle/torque limit:** tune-level, pending UpRev/Osiris manual-conversion reflash.
+
+**Dead ends / corrections (so others don't repeat them):**
+- Dual-bus physical split — unnecessary; single bus works.
+- `0x23E` is **throttle/torque, not RPM** (earlier assumption was wrong; it came from a discarded third-party log).
+- TCM CAN emulation does not fix the throttle limit — that's tune-level.
+
+---
+
+## Repository layout
+
+```
+Xterra-Titan-Canbus-Gateway/
 ├─ README.md
 ├─ LICENSE
 ├─ docs/
-│ ├─ Gateway-Design.md
-│ ├─ Logs-And-Sketches.md
-│ └─ ...
+│  ├─ SIGNALS.md          ← CAN ID map: confirmed vs provisional
+│  └─ GATEWAY_DESIGN.md   ← architecture + how the gateway is built
 ├─ firmware/
-│ ├─ gateway_teensy41/
-│ ├─ test_injection/
-│ └─ utils/
+│  ├─ gateway/            ← working gateway sketch
+│  ├─ sniffer_freetext/   ← listen-only logger w/ free-text markers
+│  ├─ tcm_spoof_test/     ← 0x251 TCM spoof tester
+│  └─ tach_target_test/   ← RPM-injection tester
 ├─ data/
-│ ├─ logs/ ← your real CAN log files
-│ └─ id_map.csv ← signal definitions
+│  ├─ id_map.csv          ← machine-readable signal map
+│  └─ logs/               ← capture logs (add your own; large files)
 └─ scripts/
-└─ convert_savvycan.py
-
-
----
-
-## 🧾 CAN Messages of Interest
-
-| ID | Direction | Purpose / Signal | Status |
-|----|------------|------------------|---------|
-| `0x180` | ECM → Chassis | Engine RPM broadcast | Working / synthesized | UNCONFIRMED
-| `0x29E` | ECM → Chassis | ECM status / MIL | Under test |
-| `0x160` | ECM → Chassis | Engine load / torque | Observed |
-| `0x6F7` | ECM → Chassis | Diagnostic heartbeat | Observed |
-
-*(Values above based on Titan ECM observation and log correlation.)*
+   └─ convert_savvycan.py ← text log → CSV for analysis
+```
 
 ---
 
-## 🧮 Tools
+## Tools
 
-- **SavvyCAN** or **BUSMaster** for logging / replay  
-- **convert_savvycan.py** (in `/scripts`) — converts text logs into CSVs for analysis:
-  ```bash
+- **SavvyCAN** for logging/replay; **Consult II/III** and a Topdon scan tool for module data.
+- `scripts/convert_savvycan.py` converts text logs to CSV:
+  ```
   python3 scripts/convert_savvycan.py data/logs/rev_sweep.txt data/logs/rev_sweep.csv
-
-🧑‍🔬 Testing Progress
-
-✅ CAN communication restored between ABS and TCCM after synthetic frame injection
-
-⚙️ Steering angle signal still under investigation (C1156 VDC code)
-
-🧱 Rear diff lock module ignored (planned bypass due to U1000 Communication code)
-
-🧩 Next: verify ECM ↔ gateway isolation and message bridging logic
-
-🧱 Planned Enhancements
-
-Add filtering & translation rules in firmware (e.g., RPM scaling, MIL relay)
-
-Automatic CAN bus diagnostics on startup
-
-Bench simulation mode (inject + log without vehicle connection)
-
-Expand ID map for cluster and VDC messages
-
-⚖️ License
-
-MIT License © 2025 Xterra-Titan CAN Gateway Contributors
-
-🤝 Community
-
-This project is open for collaboration!
-If you’re doing a similar Nissan swap or reverse-engineering CAN messages, feel free to fork and submit pull requests.
-Let’s make Titan drivetrain swaps easier for every Xterra owner.
-=======
-# 🛠️ Xterra ↔ Titan CAN Bus Gateway (Teensy 4.1 Edition)
-
-> A dual-bus CAN gateway that allows a **2nd-Gen Nissan Xterra** chassis to operate with a **Nissan Titan ECM and drivetrain**.  
-> Built around a **Teensy 4.1** microcontroller and dual **SN65HVD230** CAN transceivers.
+  ```
 
 ---
 
-## ⚙️ Project Goals
+## License
 
-- Integrate a **Titan VK56DE ECM** with the **Xterra chassis** electronics.  
-- Emulate or forward key CAN messages (RPM, MIL, steering angle, etc.) required by ABS, VDC, and other modules.  
-- Maintain OEM-style reliability, termination, and signal integrity.  
-- Provide open, well-documented firmware for other Nissan CAN swap enthusiasts.
+MIT — see [LICENSE](LICENSE).
 
----
+## Contributing
 
-## 🧩 Hardware Overview
-
-| Component | Purpose | Notes |
-|------------|----------|-------|
-| **Teensy 4.1** | Core MCU | 3 native CAN controllers, used here with CAN1 + CAN2 |
-| **SN65HVD230 (Waveshare)** ×2 | CAN transceivers | 3.3 V logic, on-board 120 Ω resistor |
-| **Power Supply** | 12 V → 5 V/3.3 V | Use clean regulated power with reverse-polarity + TVS protection |
-
-### Pin assignments (Teensy 4.1)
-| Bus | CAN TX | CAN RX | Transceiver |
-|------|--------|--------|--------------|
-| CHASSIS | 22 | 23 | SN65HVD230 #1 |
-| POWERTRAIN | 1 | 0 | SN65HVD230 #2 |
-
----
-
-## 🔌 CAN Bus Topology
-
-The factory CAN line between the **IPDM** and **ECM** is **split near the firewall**, isolating the two networks:
-[Cluster, ABS, TCCM, IPDM] --120Ω-- [SN65HVD230 #1] ⇄ CAN1 ⇄ Teensy 4.1 ⇄ CAN2 ⇄ [SN65HVD230 #2] --120Ω-- [ECM, IPDM lead]
-
-
-- **CHASSIS bus:** all body modules remain connected to IPDM and terminate at the IPDM and gateway transceiver.  
-- **POWERTRAIN bus:** the Titan ECM and IPDM harness stub form a second segment, terminated at the ECM and the gateway transceiver.  
-
-This creates **two properly terminated 60 Ω CAN networks**, bridged in software by the Teensy.
-
----
-
-## 📡 Termination & Wiring Notes
-
-| Mode | SN65HVD230 Resistor | Description |
-|------|----------------------|-------------|
-| **Sniffer / injector** | ❌ *Removed* | When connected in parallel to the OEM bus (ECM + IPDM handle termination) |
-| **Gateway (split-bus)** | ✅ *Installed* | Each SN65HVD230 acts as one physical end of its bus segment |
-
-**Grounding:** tie both transceiver grounds and the Teensy GND together, and bond to vehicle chassis at a single point.  
-Use twisted pairs for CANH/CANL (≈ 120 Ω impedance) and keep leads under ~20 cm to the splice points.
-
----
-
-## 🧰 Firmware Overview
-
-Firmware is written for **Teensy 4.1** using the **FlexCAN_T4** library.
-
-### Main sketches
-| Path | Function |
-|------|-----------|
-| `firmware/gateway_teensy41/gateway_teensy41.ino` | Dual-bus gateway core (bridges chassis ↔ powertrain) | WIP
-| `firmware/utils/can_sniffer.ino` | Passive CAN sniffer for logging / ID discovery |
-| `firmware/test_injection/test_injection.ino` | Injector used to reproduce and clear communication faults during testing |
-
-Typical bus speed: **500 kbit/s** on both networks.
-
----
-
-## 📂 Repository Layout
-xterra-titan-canbus-gateway/
-├─ README.md
-├─ LICENSE
-├─ docs/
-│ ├─ Gateway-Design.md
-│ ├─ Logs-And-Sketches.md
-│ └─ ...
-├─ firmware/
-│ ├─ gateway_teensy41/
-│ ├─ test_injection/
-│ └─ utils/
-├─ data/
-│ ├─ logs/ ← your real CAN log files
-│ └─ id_map.csv ← signal definitions
-└─ scripts/
-└─ convert_savvycan.py
-
-
----
-
-## 🧾 CAN Messages of Interest
-
-| ID | Direction | Suspected Purpose | Notes / Status |
-|----|------------|------------------|----------------|
-| `0x180` | ECM → Chassis | Possible Engine RPM | Seen changing during rev sweep; not verified |
-| `0x29E` | ECM → Chassis | Possible ECM status / MIL | Appears when MIL active; under review |
-| `0x160` | ECM → Chassis | Possibly torque/load or throttle data | Frequently active; contents vary with throttle |
-| `0x6F7` | ECM → Chassis | Diagnostic or heartbeat | Low-frequency, constant frame |
-| `0x182`, `0x285` | ECM ↔ ABS/TCCM | Unknown | Observed during motion and fault logging; analysis ongoing |
-
-**Summary:**  
-No frame has yet been confirmed to carry RPM, steering angle, or VDC handshake data.  
-Identification efforts are ongoing using rev-sweep, idle, and ABS fault logs.
-
----
-
-## 🧮 Tools
-
-- **SavvyCAN** or **BUSMaster** for logging / replay  
-- **convert_savvycan.py** (in `/scripts`) — converts text logs into CSVs for analysis:
-  ```bash
-  python3 scripts/convert_savvycan.py data/logs/rev_sweep.txt data/logs/rev_sweep.csv
-
-🧑‍🔬 Testing Progress
-
-✅ CAN communication restored between ABS and TCCM after synthetic frame injection
-
-⚙️ Steering angle signal still under investigation (C1156 VDC code)
-
-🧱 Rear diff lock module ignored (planned bypass due to U1000 Communication code)
-
-🧩 Next: verify ECM ↔ gateway isolation and message bridging logic
-
-🧱 Planned Enhancements
-
-Add filtering & translation rules in firmware (e.g., RPM scaling, MIL relay)
-
-Automatic CAN bus diagnostics on startup
-
-Bench simulation mode (inject + log without vehicle connection)
-
-Expand ID map for cluster and VDC messages
-
-⚖️ License
-
-MIT License © 2025 Xterra-Titan CAN Gateway Contributors
-
-🤝 Community
-
-This project is open for collaboration!
-If you’re doing a similar Nissan swap or reverse-engineering CAN messages, feel free to fork and submit pull requests.
-
-Let’s make Titan drivetrain swaps easier for every Xterra owner.
->>>>>>> a0ce2428604eddfbf8e4e78ec19a22dca0049709
+Doing a similar Nissan CAN swap? Forks and PRs welcome. The goal is to make
+Titan-into-Xterra (and related F-Alpha/VQ40/VK56 platform) swaps easier to
+document and reproduce.

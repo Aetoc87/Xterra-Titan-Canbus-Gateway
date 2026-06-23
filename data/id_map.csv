@@ -1,2 +1,16 @@
-id_hex,bus,signal,notes
-0x180,CHASSIS,EngineRPM,Teensy synth frame
+id,side,signal,bytes,encoding,status,notes
+0x180,titan_ecm,engine_rpm,0-1,big-endian 0.125 RPM/LSB,CONFIRMED,rev-sweep verified
+0x1F9,titan_ecm,engine_rpm_mirror,2-3,mirrors 0x180,CONFIRMED,
+0x160,titan_ecm,engine_load_torque,,varies with throttle,PROVISIONAL,observed
+0x182,titan_ecm,unknown,,,PROVISIONAL,
+0x251,titan_tcm,gear_status,byte3 bitfield,P=01 R=02 N=04 D=08; byte0/5 counter; byte6 mux idx; byte7 mux payload,CONFIRMED,parts-truck capture; spoof clears comms not throttle
+0x231,xterra_chassis,ENGINE_2,,presence,PROVISIONAL,clears comms
+0x233,xterra_chassis,ENGINE_7,,presence,PROVISIONAL,clears comms
+0x23D,xterra_chassis,ENGINE_3_engine_speed,3-4,LE; scale UNCONFIRMED,PARTIAL,counter enables 4HI; TCCU reads frozen value
+0x23E,xterra_chassis,ENGINE_4_throttle_torque,,NOT rpm,CONFIRMED,zero at engine-off
+0x253,xterra_chassis,TCU_1,,,PROVISIONAL,
+0x551,xterra_chassis,ENGINE_5,,presence,PROVISIONAL,
+0x580,xterra_chassis,ENGINE_6,,tach candidate,PROVISIONAL,under test
+0x29E,xterra_chassis,presence,,,PROVISIONAL,clears comms
+0x2A5,xterra_chassis,presence,,,PROVISIONAL,clears comms
+0x794,xterra_chassis,presence,,,PROVISIONAL,clears comms

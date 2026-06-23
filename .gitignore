@@ -1,0 +1,14 @@
+# Build artifacts
+.pio/
+.vscode/
+*.elf
+*.hex
+*.bin
+
+# Large/raw logs (uncomment to keep them out of git history)
+# data/logs/*.txt
+# data/logs/*.csv
+
+# OS cruft
+.DS_Store
+Thumbs.db
