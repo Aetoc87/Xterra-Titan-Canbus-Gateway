@@ -67,10 +67,10 @@ All sketches target **Teensy 4.1 / FlexCAN_T4**, CAN1, 500 kbit/s.
 
 | Path                                          | Function                                                                 |
 | --------------------------------------------- | ------------------------------------------------------------------------ |
-| `firmware/gateway/gateway.ino`                | **Working gateway.** Presence frames + 0x23D engine data (advancing counter) + 0x251 neutral TCM spoof. Clears chassis comms faults, enables 2WD↔4HI. |
-| `firmware/sniffer_freetext/sniffer_freetext.ino` | **Listen-only logger** with free-text markers (type any text + Enter to stamp the log). Used for capture sessions. Transmits nothing. |
-| `firmware/tcm_spoof_test/tcm_spoof_test.ino`  | Staged 0x251 TCM gear-status spoof tester (modes A/B/C, gear toggle, rate). |
-| `firmware/tach_target_test/tach_target_test.ino` | RPM-injection tester for finding the cluster/TCCU engine-speed frame/scale. |
+| `firmware/gateway/gateway.cpp`                | **Working gateway.** Presence frames + 0x23D engine data (advancing counter) + 0x251 neutral TCM spoof. Clears chassis comms faults, enables 2WD↔4HI. |
+| `firmware/sniffer_freetext/sniffer_freetext.cpp` | **Listen-only logger** with free-text markers (type any text + Enter to stamp the log). Used for capture sessions. Transmits nothing. |
+| `firmware/tcm_spoof_test/tcm_spoof_test.cpp`  | Staged 0x251 TCM gear-status spoof tester (modes A/B/C, gear toggle, rate). |
+| `firmware/tach_target_test/tach_target_test.cpp` | RPM-injection tester for finding the cluster/TCCU engine-speed frame/scale. |
 
 See **`docs/SIGNALS.md`** for the CAN ID map and **`docs/GATEWAY_DESIGN.md`** for
 how the gateway is structured.
