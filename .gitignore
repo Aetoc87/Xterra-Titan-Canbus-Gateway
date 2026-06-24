@@ -9,6 +9,9 @@
 # data/logs/*.txt
 # data/logs/*.csv
 
+# Local working docs
+docs/FSM/
+
 # OS cruft
 .DS_Store
 Thumbs.db
