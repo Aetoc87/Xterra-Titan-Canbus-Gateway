@@ -1,75 +1,62 @@
 # CAN Signal Map
 
-Status legend:
-- **CONFIRMED** — verified against first-party captures and/or the factory service manual.
-- **PROVISIONAL** — working hypothesis; not yet verified.
-- **WRONG/DROPPED** — previously assumed, since disproven (kept so others don't repeat it).
-
-All IDs are 11-bit standard. Bus is 500 kbit/s.
+Status: **CONFIRMED** (verified) / **PROVISIONAL** (hypothesis) / **WRONG-DROPPED**
+(disproven, kept so others don't repeat it). 11-bit IDs, 500 kbit/s.
 
 ---
 
-## Titan ECM side (0x1xx range)
+## Titan ECM side (0x1xx) — read by the gateway
 
-| ID    | Bytes | Signal           | Encoding                         | Status    |
-| ----- | ----- | ---------------- | -------------------------------- | --------- |
-| 0x180 | 0–1   | Engine RPM       | big-endian, 0.125 RPM/LSB (÷8)   | CONFIRMED (rev sweep) |
-| 0x1F9 | 2–3   | Engine RPM (mirror) | mirrors 0x180 RPM             | CONFIRMED |
-| 0x160 | —     | Engine load / torque-ish | varies with throttle     | PROVISIONAL (observed) |
-| 0x182 | —     | (unknown)        | —                                | PROVISIONAL |
-| 0x251 | see below | TCM gear status | see TCM section               | CONFIRMED (parts-truck capture) |
+| ID    | Bytes | Signal     | Encoding                       | Status    |
+| ----- | ----- | ---------- | ------------------------------ | --------- |
+| 0x180 | 0-1   | Engine RPM | **big-endian, x0.125**         | CONFIRMED (rev sweep; gateway reads this) |
+| 0x1F9 | 2-3   | RPM mirror | mirrors 0x180                  | CONFIRMED |
+| 0x251 | see below | TCM gear status | bitfield                  | CONFIRMED (parts-truck capture) |
 
-### 0x251 — Titan TCM gear status (CONFIRMED)
-- DLC 8, ~100 Hz (10 ms).
-- **byte3 = gear bitfield:** `0x01`=Park, `0x02`=Reverse, `0x04`=Neutral, `0x08`=Drive.
-  (Park and Neutral marker-confirmed. In Drive, byte1 also reads `0x10`.)
-- **byte0 / byte5 = rolling counter.**
-- **byte6 = multiplex index; byte7 = multiplexed payload** (NOT a live checksum).
-- A frozen neutral replay clears the ECM lost-TCM comms code (U1000/U1001) in the
-  manual swap. Does NOT restore throttle (tune-level limit remains).
+### 0x251 — Titan TCM gear status
+DLC 8, ~100 Hz. byte3 bitfield: 0x01=Park, 0x02=Reverse, **0x04=Neutral**, 0x08=Drive.
+byte0/byte5 rolling counter; byte6 mux index; byte7 mux payload (not a live checksum).
+Gateway replays the verbatim 12-frame Neutral cycle to clear the ECM lost-TCM code
+(manual swap only).
 
 ---
 
-## Xterra VQ40 chassis side (0x23x range)
+## Xterra chassis side (0x23x) — written by the gateway
 
-The chassis modules (combination meter, ABS, TCCU/transfer) expect these. Absence
-sets U1000 "lost communication" codes. The gateway injects them.
+| ID    | Bytes | Signal | Encoding | Status |
+| ----- | ----- | ------ | -------- | ------ |
+| **0x23D** | **3-4** | **Engine RPM (cluster tach + TCCU)** | **little-endian, RPM = raw x 3.125 (raw = rpm/3.125)** | **CONFIRMED** (Frontier capture corr 1.000; verified live on cluster/ABS/TCCU) |
+| 0x23D | 7 | Coolant temp (mirror) | degC = raw - 50 | CONFIRMED |
+| 0x233 | 0 | Coolant temp | degC = raw - 50 | CONFIRMED (must match 0x23D b7 or gauge pegs low) |
+| 0x231 | — | engine status; **drives SES light** | toggling 0x231 toggles SES | PARTIAL (SES link confirmed; full decode TODO) |
+| 0x23E | — | throttle/torque (NOT rpm) | — | CONFIRMED (zero at engine-off) |
+| 0x29E,0x2A5,0x551,0x794 | — | presence | working payloads | PROVISIONAL (clear U1000) |
 
-| ID    | Signal (per 2011 Xterra DBC / FSM) | Status    | Notes                                   |
-| ----- | ---------------------------------- | --------- | --------------------------------------- |
-| 0x231 | ENGINE_2                           | PROVISIONAL | presence payload working                |
-| 0x233 | ENGINE_7                           | PROVISIONAL | presence                                |
-| 0x23D | ENGINE_3 — engine speed (TCCU reads this) | PARTIAL | presence + advancing counter enables 4HI; **RPM scale NOT confirmed** — TCCU reads frozen/implausible value |
-| 0x23E | ENGINE_4 — **throttle/torque, NOT RPM** | CONFIRMED | all-zeros at engine-off confirmed it's not RPM |
-| 0x1F9 | ENGINE_1 — RPM 0.125                | CONFIRMED | (shared convention with Titan side)     |
-| 0x253 | TCU_1                              | PROVISIONAL | —                                       |
-| 0x551 | ENGINE_5                           | PROVISIONAL | presence                                |
-| 0x580 | ENGINE_6                           | PROVISIONAL | tach candidate (under test)             |
-| 0x29E | (presence)                         | PROVISIONAL | clears comms when present               |
-| 0x2A5 | (presence)                         | PROVISIONAL | clears comms when present               |
-| 0x794 | (presence)                         | PROVISIONAL | clears comms when present               |
+**Tach scale note:** the cluster uses **3.125** RPM/LSB on 0x23D — NOT the 0.125
+convention used on the Titan 0x180 side. Using 0.125 here is 25x too large and the
+cluster ignores it. This single scale error had blocked the tach, frozen the TCCU
+at ~6375 rpm, and prevented 4LO.
 
----
-
-## TCCU / transfer (from factory TF service-manual section)
-
-The transfer control unit (TCCU) receives, **over CAN**:
-- **Vehicle speed** — from the ABS actuator/electric unit (CAN). 4LO permit requires this to read 0.
-- **Stop-lamp / brake signal** — from ABS (CAN). Part of the manual 4LO permit.
-- **Engine speed** — from the ECM (CAN). Monitored as ">400 rpm = running"; no documented RPM ceiling in the 4LO permit table.
-
-Hardwired (not CAN) inputs verified on the build:
-- **Neutral 4LO switch** — TCCU pin 33 → connector F14 pin 5 → switch → F14 pin 4 → ground. Circuit confirmed good (pin 33 pulls to ground in neutral).
-- **Wait detection switch** — OFF in 2WD, ON in 4H and 4LO-attempt. Confirmed normal per FSM TF-37.
-
-**4LO permit conditions (manual), per FSM TF-37:**
-vehicle stopped • engine running • M/T in neutral with **clutch AND brake depressed**.
+**Gateway translation:** read Titan 0x180 (b0-1 BE x0.125) -> RPM -> write
+0x23D b3-4 (LE, /3.125). Drives cluster tach and feeds the TCCU/ABS a valid
+engine speed.
 
 ---
 
-## Open decode targets (Frontier capture session)
+## TCCU / transfer (factory TF section)
 
-To be resolved from a stock 2006 Frontier (VQ40, same platform) capture:
-- **Engine-speed frame the cluster/TCCU actually read** — rev-sweep capture; find the 0x23x frame/byte/endianness/scale that tracks real RPM. Fixes the tach and the TCCU frozen-engine-speed artifact.
-- **Coolant temp byte/scale** — cold-start warm-up capture; find the byte that ramps with temperature, anchored to noted temps.
-- **Vehicle-speed / brake frames** at true zero and while moving — confirm the TCCU permit inputs.
+TCCU receives over CAN: vehicle speed (from ABS), stop-lamp/brake (from ABS),
+engine speed (from ECM). 4LO permit (manual): vehicle stopped, engine running,
+neutral + clutch + brake. **4LO now works** once the gateway supplies correct
+engine speed on 0x23D — that was the missing permit input.
+
+Hardwired inputs verified good: Neutral 4LO switch (TCCU pin 33 -> F14 p5 ->
+switch -> F14 p4 -> ground); wait detection switch (OFF in 2WD, ON in 4H/4LO).
+
+---
+
+## Open decode targets
+
+- **Titan ECM coolant frame** — to make ECT live (Xterra side known; Titan source undecoded). Needs a VK56 cold-start warm-up capture.
+- **0x231 full decode** — for the SES light.
+- Brake/stop-lamp candidate: **0x354 byte6 bit 0x10** (toggled on brake press in Frontier capture) — PROVISIONAL.

@@ -46,17 +46,26 @@ use an advancing counter:
 - **0x251** (TCM neutral spoof): byte0/byte5 advance to mimic the Titan TCM's
   rolling counter.
 
-## What's deliberately provisional
+## RPM translation (confirmed)
 
-- The **RPM value** encoded into 0x23D is not yet confirmed correct. The frame's
-  presence + counter satisfies the chassis enough for 4HI, but the TCCU reads a
-  frozen/implausible engine speed from the injected value. The byte/scale will be
-  corrected once the stock-VQ40 capture identifies the real engine-speed encoding.
-  Until then, treat the 0x23D RPM bytes as a placeholder.
+The gateway reads the Titan ECM's engine speed and rewrites it for the chassis:
 
+- **Read** Titan `0x180` bytes 0-1, big-endian, x0.125 -> real RPM (RX callback).
+- **Write** `0x23D` bytes 3-4, little-endian, `raw = rpm / 3.125` -> the value the
+  cluster tach and the TCCU read. The 3.125 scale is essential; 0.125 (the Titan-side
+  convention) is 25x too large here and the cluster ignores it.
+
+If no `0x180` is seen for 500 ms (ECM off/disconnected) the tach falls to 0 rather
+than freezing on a stale value.
+
+## What's still provisional
+
+- **ECT** is a fixed ~90 C placeholder (written to 0x233 b0 + 0x23D b7). Making it
+  live needs the Titan ECM's coolant frame decoded; the Xterra-side encoding
+  (degC = raw - 50) is confirmed.
 - The presence-frame payloads are working values, but most are not individually
-  decoded — they're known to satisfy the chassis comms checks, not necessarily to
-  carry meaningful signal content.
+  decoded — they satisfy the chassis comms checks, not necessarily carrying
+  meaningful signal content.
 
 ## Safety boundaries
 

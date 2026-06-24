@@ -1,142 +1,134 @@
 /*
- * Xterra <-> Titan CAN Gateway   Teensy 4.1 + FlexCAN_T4   single bus @ 500k
- * ==========================================================================
- * WORKING gateway sketch as of the current project state. This is the build
- * that clears the chassis U1000/ABS/TCCM communication faults, makes 2WD<->4HI
- * shifting work, and keeps the Titan ECM out of TCM limp-related comms codes.
+ * Xterra <-> Titan Gateway  — LIVE RPM TRANSLATION   CAN1 @ 500k
+ * ====================================================================
+ * Full working gateway. Reads the Titan VK56DE ECM's engine RPM off the bus
+ * and re-broadcasts it in the format the Xterra cluster + TCCU expect.
  *
- * ---------------------------------------------------------------------------
- * ARCHITECTURE (single bus -- no physical split needed)
- * ---------------------------------------------------------------------------
- * The Titan VK56DE ECM broadcasts on the 0x1xx ID range. The Xterra VQ40
- * chassis modules (cluster, ABS, TCCU/transfer) listen on the 0x23x range.
- * The two ranges DO NOT overlap, so the ECM and chassis can share one physical
- * bus and the Teensy simply ADDS the frames the chassis expects but the Titan
- * ECM never sends. No bus split, no second transceiver required.
+ * TACH (confirmed):
+ *   READ  Titan 0x180 bytes 0-1, BIG-endian, 0.125 RPM/LSB  -> real RPM
+ *   WRITE Xterra 0x23D bytes 3-4, LITTLE-endian, RPM=raw*3.125 (raw=rpm/3.125)
+ *   This drives the cluster tach AND gives the TCCU a valid engine speed
+ *   (which is what made 4HI and 4LO work).
  *
- * This sketch is an INJECTOR/translator on one bus, not a two-port bridge.
+ * ECT (confirmed):
+ *   0x233 byte0 AND 0x23D byte7 (mirror), degC = raw-50.
+ *   Currently a fixed placeholder (~90C). TODO: translate from the Titan ECM's
+ *   coolant frame once that source is captured/decoded.
  *
- * ---------------------------------------------------------------------------
- * WHAT THIS SKETCH SENDS
- * ---------------------------------------------------------------------------
- * 1. PRESENCE FRAMES: a set of 0x23x/0x5xx/0x7xx frames the chassis modules
- *    expect to see periodically. Their absence sets U1000 "lost comm" codes.
- *    Sent on a fixed per-frame schedule (see scheduleTable below).
+ * Also sends: presence frames (clears U1000), 0x251 Neutral gear cycle.
  *
- * 2. 0x23D ENGINE DATA: carries an advancing byte0 counter. Providing this
- *    (with a live-looking counter) is what got 2WD<->4HI shifting to work.
- *    NOTE: the RPM value encoding in this frame is NOT yet confirmed correct
- *    -- the TCCU currently reads a frozen/implausible engine speed from the
- *    injected data. Pending Frontier (stock VQ40) capture to confirm the real
- *    engine-speed frame/byte/scale. See docs/SIGNALS.md.
+ * SAFETY: if no 0x180 is seen for RPM_TIMEOUT ms (ECM off/disconnected), the
+ * tach falls to 0 rather than freezing at a stale value.
  *
- * 3. 0x251 TCM GEAR SPOOF (NEUTRAL): a frozen single-frame replay of the
- *    Titan TCM's neutral gear-status frame. Clears the ECM's lost-TCM comms
- *    code (U1000/U1001) in this manual-swap application where no automatic
- *    TCM exists.
- *      *** SAFETY: this spoof is ONLY appropriate because there is NO
- *      automatic transmission present. It defeats a check that exists to
- *      coordinate with an A/T. Do NOT use on a vehicle that has an automatic.
- *      It does NOT restore full throttle authority -- the remaining torque
- *      limit is tune-level (UpRev/Osiris), not a comms problem. ***
- *
- * ---------------------------------------------------------------------------
- * SCHEDULE TABLE
- * ---------------------------------------------------------------------------
- * Each frame has its own period. This replaces an earlier id%64 slot-assignment
- * approach that risked slot collisions; the explicit table is maintainable and
- * collision-free.
+ * SERIAL: k/m ECT +/-5C | d RPM debug print on/off
  */
 
 #include <Arduino.h>
 #include <FlexCAN_T4.h>
 
-FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Can0;
+FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_32> CANbus;
 static const uint32_t CAN_BAUD = 500000;
 
-// ---------------------------------------------------------------------------
-// Per-frame schedule. period_ms = how often to send. last_ms = bookkeeping.
-// Data bytes are the confirmed/working presence payloads.
-// ---------------------------------------------------------------------------
-struct SchedFrame {
-  uint32_t id;
-  uint8_t  len;
-  uint8_t  data[8];
-  uint16_t period_ms;
-  uint32_t last_ms;
-  bool     hasCounter;   // if true, byte0 is replaced with an advancing counter
-};
+// ---------- live RPM read from Titan 0x180 ----------
+volatile uint16_t titanRpm = 0;
+volatile uint32_t lastRpmMs = 0;
+const uint32_t RPM_TIMEOUT = 500;          // ms; tach -> 0 if ECM goes quiet
+bool dbg=false;
 
-// NOTE: payloads below are the working presence values. The 0x23D entry carries
-// the advancing counter (hasCounter = true) that enabled 4HI shifting.
-SchedFrame sched[] = {
-  // id,    len, data[8],                                             period, last, counter
-  { 0x29E, 8, {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, 100, 0, false },
-  { 0x2A5, 8, {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, 100, 0, false },
-  { 0x231, 8, {0xFE,0x90,0x00,0xFE,0xFE,0xC1,0x52,0x96},  20, 0, false },
-  { 0x233, 8, {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},  20, 0, false },
-  { 0x23D, 8, {0x00,0x00,0x00,0x00,0x00,0x47,0x09,0x0A},  20, 0, true  }, // engine data + counter
-  { 0x23E, 8, {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},  20, 0, false },
-  { 0x551, 8, {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, 100, 0, false },
-  { 0x794, 8, {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, 100, 0, false },
-};
-const size_t SCHED_N = sizeof(sched) / sizeof(sched[0]);
-
-// ---------------------------------------------------------------------------
-// 0x251 TCM neutral gear-status spoof (frozen single-frame replay).
-// Sent at ~100 Hz to match the Titan TCM cadence.
-// byte3 = 0x04 -> Neutral (marker-confirmed in TCM captures).
-// byte0 carries an advancing counter (the TCM frame has a rolling counter).
-// ---------------------------------------------------------------------------
-const uint32_t TCM_ID       = 0x251;
-const uint16_t TCM_PERIOD   = 10;     // ms (~100 Hz)
-uint32_t       tcm_last     = 0;
-uint8_t        tcm_data[8]  = {0x00,0x10,0x00,0x04,0x00,0x00,0x00,0x00}; // Neutral
-uint8_t        tcm_counter  = 0;
-
-// advancing counter for 0x23D engine data
-uint8_t        eng_counter  = 0;
-
-void sendFrame(uint32_t id, uint8_t len, const uint8_t *d) {
-  CAN_message_t m;
-  m.id = id;
-  m.len = len;
-  for (uint8_t i = 0; i < len; i++) m.buf[i] = d[i];
-  Can0.write(m);
-}
-
-void setup() {
-  Serial.begin(115200);
-  Can0.begin();
-  Can0.setBaudRate(CAN_BAUD);
-  Can0.setMaxMB(16);
-  Can0.enableFIFO();
-  Serial.println("Xterra<->Titan gateway: presence + 0x23D engine + 0x251 neutral spoof");
-  Serial.println("Single bus @ 500k. Manual-swap application (no A/T present).");
-}
-
-void loop() {
-  uint32_t now = millis();
-
-  // scheduled presence / engine frames
-  for (size_t i = 0; i < SCHED_N; i++) {
-    if (now - sched[i].last_ms >= sched[i].period_ms) {
-      sched[i].last_ms = now;
-      uint8_t out[8];
-      for (uint8_t b = 0; b < sched[i].len; b++) out[b] = sched[i].data[b];
-      if (sched[i].hasCounter) {
-        out[0] = eng_counter;                 // advancing counter in byte0
-        eng_counter = (eng_counter + 1) & 0xFF;
-      }
-      sendFrame(sched[i].id, sched[i].len, out);
-    }
+void onCanRx(const CAN_message_t &m){
+  if(m.id==0x180 && m.len>=2){
+    uint16_t raw=((uint16_t)m.buf[0]<<8)|m.buf[1];   // big-endian
+    titanRpm=(uint16_t)(raw*0.125f);                 // 0.125 RPM/LSB
+    lastRpmMs=millis();
   }
+}
+uint16_t currentRpm(){
+  if(millis()-lastRpmMs > RPM_TIMEOUT) return 0;     // stale -> 0
+  return titanRpm;
+}
 
-  // 0x251 TCM neutral spoof with rolling counter in byte0
-  if (now - tcm_last >= TCM_PERIOD) {
-    tcm_last = now;
-    tcm_data[0] = tcm_counter;
-    tcm_counter = (tcm_counter + 1) & 0xFF;
-    sendFrame(TCM_ID, 8, tcm_data);
+// ---------- ECT (placeholder ~90C until Titan coolant decoded) ----------
+int ectC = 90;
+uint8_t ectRaw(){ int r=ectC+50; if(r<0)r=0; if(r>255)r=255; return (uint8_t)r; }
+
+// ---------- 0x23D b3-4 RPM encode (LE, raw=rpm/3.125) ----------
+void putRpm(CAN_message_t &m,uint16_t rpm){
+  uint16_t raw=(uint16_t)(rpm/3.125f + 0.5f);
+  m.buf[3]=raw&0xFF; m.buf[4]=(raw>>8)&0xFF;
+}
+
+// ---------- presence frames ----------
+struct TxFrame { uint32_t id; uint8_t len; uint16_t interval; uint8_t data[8]; uint32_t last; };
+TxFrame presence[] = {
+  {0x29E,8, 50,{0xFE,0x00,0xC0,0x00,0x00,0xFD,0x00,0x5B},0},
+  {0x2A5,7, 50,{0x00,0x00,0x00,0x20,0x00,0x00,0x00},0},
+  {0x231,8,100,{0xFE,0x90,0x00,0xFE,0xFE,0xC1,0x52,0x96},0},
+  {0x233,8,100,{0x0A,0x00,0x00,0x18,0x00,0x00,0x00,0x00},0},  // b0 -> ECT
+  {0x23E,8,100,{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},0},
+  {0x551,7,200,{0x00,0x00,0x00,0xA0,0x00,0x00,0x80},0},
+  {0x794,3,500,{0x01,0x13,0x20},0},
+};
+const size_t NP=sizeof(presence)/sizeof(presence[0]);
+void sendPresence(TxFrame &f,uint32_t now){
+  if(now-f.last<f.interval) return; f.last=now;
+  CAN_message_t m; m.id=f.id; m.len=f.len; memcpy(m.buf,f.data,f.len);
+  if(f.id==0x233) m.buf[0]=ectRaw();
+  CANbus.write(m);
+}
+
+// ---------- 0x23D engine data: live RPM b3-4, ECT mirror b7 ----------
+uint8_t ctrSeq[4]={0x33,0x53,0x73,0x13}; uint8_t ctrIdx=0;
+uint32_t last23D=0; const uint16_t I23D=25;   // ~39 Hz
+void send23D(uint32_t now){
+  if(now-last23D<I23D) return; last23D=now;
+  CAN_message_t m; m.id=0x23D; m.len=8; for(int i=0;i<8;i++) m.buf[i]=0;
+  m.buf[0]=ctrSeq[ctrIdx]; ctrIdx=(ctrIdx+1)&0x03;
+  putRpm(m, currentRpm());                 // <-- LIVE translated Titan RPM
+  m.buf[5]=0x47; m.buf[6]=0x09; m.buf[7]=ectRaw();   // ECT mirror
+  CANbus.write(m);
+}
+
+// ---------- 0x251 TCM gear spoof (Neutral) ----------
+const uint8_t NEUTRAL_CYCLE[12][8]={
+  {0x10,0x00,0x00,0x04,0x00,0x6F,0x10,0x52},{0x10,0x00,0x00,0x04,0x00,0xAF,0x11,0x48},
+  {0x10,0x00,0x00,0x04,0x00,0xEF,0x12,0x30},{0x10,0x00,0x00,0x04,0x00,0x2F,0x13,0x36},
+  {0x10,0x00,0x00,0x04,0x00,0x6F,0x14,0x37},{0x10,0x00,0x00,0x04,0x00,0xAF,0x15,0x34},
+  {0x10,0x00,0x00,0x04,0x00,0xEF,0x16,0xA8},{0x10,0x00,0x00,0x04,0x00,0x2F,0x17,0xC2},
+  {0x10,0x00,0x00,0x04,0x00,0x6F,0x40,0x00},{0x10,0x00,0x00,0x04,0x00,0xAF,0x41,0x00},
+  {0x10,0x00,0x00,0x04,0x00,0xEF,0x42,0x00},{0x10,0x00,0x00,0x04,0x00,0x2F,0x43,0x00},
+};
+uint8_t gearIdx=0; uint32_t last251=0; const uint16_t I251=10;
+void send251(uint32_t now){
+  if(now-last251<I251) return; last251=now;
+  CAN_message_t m; m.id=0x251; m.len=8;
+  for(int i=0;i<8;i++) m.buf[i]=NEUTRAL_CYCLE[gearIdx][i];
+  gearIdx=(gearIdx+1)%12; CANbus.write(m);
+}
+
+void setup(){
+  Serial.begin(115200); uint32_t t=millis(); while(!Serial&&millis()-t<2000){}
+  CANbus.begin(); CANbus.setBaudRate(CAN_BAUD); CANbus.setMaxMB(32);
+  CANbus.enableFIFO(); CANbus.enableFIFOInterrupt(); CANbus.onReceive(onCanRx);
+  Serial.println("Gateway LIVE: reads Titan 0x180 RPM -> writes 0x23D b3-4 (cluster tach + TCCU).");
+  Serial.println("ECT placeholder ~90C (0x233 b0 + 0x23D b7). k/m ECT, d debug.");
+}
+uint32_t lastStatus=0;
+void loop(){
+  uint32_t now=millis();
+  CANbus.events();                          // service RX callback
+  for(size_t i=0;i<NP;i++) sendPresence(presence[i],now);
+  send23D(now); send251(now);
+  if(now-lastStatus>1000){ lastStatus=now;
+    if(dbg){ Serial.print("[titanRPM "); Serial.print(currentRpm());
+      Serial.print(" | ECT "); Serial.print(ectC); Serial.println("C ]"); }
+  }
+  while(Serial.available()){
+    char c=Serial.read();
+    switch(c){
+      case 'k': ectC+=5; Serial.print(">> ECT ");Serial.println(ectC); break;
+      case 'm': ectC-=5; Serial.print(">> ECT ");Serial.println(ectC); break;
+      case 'd': dbg=!dbg; Serial.println(dbg?">> debug ON":">> debug OFF"); break;
+      default: break;
+    }
   }
 }
