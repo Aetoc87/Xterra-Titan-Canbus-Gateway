@@ -10,8 +10,8 @@ or live cross-checks) or **provisional**. Shared so other Nissan swap builders
 don't start from zero.
 
 > Status: **tach live and verified, 4HI + 4LO working, coolant gauge working,
-> chassis comms faults cleared.** Remaining: live coolant translation (placeholder
-> for now), SES light, and the tune-level throttle limit. See **Project Status**.
+> chassis comms faults cleared, live coolant temp.** Remaining: SES light, and
+> the ECM torque limiter (traced to the missing TCM). See **Project Status**.
 
 ---
 
@@ -55,7 +55,8 @@ WRITE  Xterra 0x23D bytes 3-4  LITTLE-endian x 3.125 (raw = rpm / 3.125)
 ```
 
 Both bytes carry the same value; the cluster pegs low if they disagree. Currently
-a fixed ~90 C placeholder in the gateway -- see Project Status for making it live.
+LIVE: the gateway reads the Titan ECM's coolant (0x551 b0, degC = raw - 40) and
+translates (+10 offset) to the Xterra scale. Gauge tracks real engine temp.
 
 ---
 
@@ -80,7 +81,7 @@ All sketches: **Teensy 4.1 / FlexCAN_T4**, CAN1, 500 kbit/s. In PlatformIO keep
 
 | Path                                  | Function                                                                  |
 | ------------------------------------- | ------------------------------------------------------------------------- |
-| `firmware/gateway/gateway.cpp`        | **Working gateway.** Reads Titan 0x180 RPM, writes 0x23D b3-4 (tach + TCCU); presence frames; 0x251 Neutral cycle; ECT mirror (placeholder). |
+| `firmware/gateway/gateway.cpp`        | **Working gateway.** Live RPM (0x180->0x23D 3.125) + live ECT (0x551->0x233/0x23D +10); presence frames incl. required DLC-7 0x551. No spoof, no injection. |
 | `firmware/sniffer_freetext/sniffer_freetext.cpp` | Listen-only logger, free-text markers (type text + Enter). Transmits nothing. |
 | `firmware/replay_sweep/`              | Captured-log replay tool (+ `replay_data.h`). Proved the tach signal was in the Frontier capture and bisected to 0x23D. |
 | `firmware/tcm_spoof_test/tcm_spoof_test.cpp` | Staged 0x251 TCM gear-status spoof tester.                          |
@@ -107,14 +108,16 @@ It does not restore full throttle; the remaining limit is tune-level.
 - **Tach: live, smooth, accurate** -- verified against cluster, ABS, and TCCU RPM readings simultaneously.
   - Read Titan `0x180` b0-1 BE x0.125; write `0x23D` b3-4 LE x3.125.
 - **4HI and 4LO both engage** -- the correct RPM signal supplied the TCCU permit input that was missing.
-- **Coolant gauge works** -- `0x233` b0 + `0x23D` b7 mirror, degC = raw - 50.
+- **Coolant gauge LIVE** -- reads Titan `0x551` b0 (raw-40), writes `0x233` b0 + `0x23D` b7 mirror (raw-50); +10 offset. Tracks real engine temp.
+- **Vehicle speed (chassis path) works** -- the ECM's "vehicle speed sensor" PID reads real 2005 chassis speed while driving. Only the TCM-sourced speed PID is dead (no TCM).
+- **0x551 is required by VDC/ABS** -- gateway sends a DLC-7 0x551; removing it causes a slip light + blocks steering-angle reset. Not just a coolant frame.
 - Chassis comms faults (U1000) cleared by the presence frames.
-- `0x251` Neutral cycle clears the ECM lost-TCM comms code (manual swap).
+- `0x251` TCM neutral spoof was tested but did **not** clear U0101 in practice, so it's removed from the gateway (see tcm_spoof_test for the frame format).
 
 **Open / next:**
-- **Live ECT:** coolant is a fixed ~90 C placeholder. To make it track the engine, capture the **Titan ECM** coolant frame (VK56 cold-start warm-up, sniffer + temp markers) and translate to 0x233 b0 / 0x23D b7. The Xterra-side encoding is known; only the Titan source is undecoded. *(The placeholder will not warn of a real overheat -- don't rely on it for temp monitoring until live.)*
-- **SES light:** on. Toggling `0x231` toggles it -- that's the thread to pull. May also relate to ECM-side codes from the manual swap.
-- **Throttle/torque limit:** tune-level, pending UpRev/Osiris manual-conversion reflash.
+- **ECM torque limiter (the power problem):** WOT logs show a deliberate ECM torque limit -- 100% pedal yields only ~1.8-2.4V throttle (rising with RPM), with no knock, normal timing, and normal fueling. Root cause traced to the **missing TCM** (U0101). Fix is tune-level (UpRev disabling TCM-loss torque management) or full TCM emulation on the gateway. Awaiting an UpRev retune.
+- **SES light:** currently falsely gateway-driven (unplugging the gateway turns it off). Plan: make it off-by-default first (0x231), then translate the Titan's real MIL bit so it means something.
+- **Cruise (future):** platform supports manual cruise (clutch+neutral cancel); CAN speed input now works. Titan-ECM viability TBD.
 
 **Dead ends / corrections (so others don't repeat them):**
 - Tach RPM scale is **3.125, not 0.125** -- the 0.125 convention (correct for the Titan 0x180 side) is 25x wrong for the Xterra 0x23D side.

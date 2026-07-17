@@ -1,14 +1,16 @@
 id,side,signal,bytes,encoding,status,notes
 0x180,titan_ecm,engine_rpm,0-1,big-endian x0.125,CONFIRMED,gateway reads this for tach
 0x1F9,titan_ecm,engine_rpm_mirror,2-3,mirrors 0x180,CONFIRMED,
-0x251,titan_tcm,gear_status,byte3 bitfield,P=01 R=02 N=04 D=08; b0/b5 counter; b6 mux idx; b7 mux payload,CONFIRMED,12-frame Neutral cycle clears ECM lost-TCM (manual only)
+0x551,titan_ecm,coolant_temp_source,0,DLC8; degC=raw-40,CONFIRMED,gateway reads this for ECT (Titan encoding)
+0x251,titan_tcm,gear_status,byte3 bitfield,P=01 R=02 N=04 D=08; b0/b5 counter; b6 mux idx; b7 mux payload,CONFIRMED,parts-truck capture; neutral spoof did NOT clear U0101 - removed from gateway
 0x23D,xterra_chassis,engine_rpm_tach,3-4,little-endian RPM=raw*3.125 (raw=rpm/3.125),CONFIRMED,cluster tach + TCCU; verified live; scale 3.125 NOT 0.125
 0x23D,xterra_chassis,coolant_temp_mirror,7,degC=raw-50,CONFIRMED,must match 0x233 b0
 0x233,xterra_chassis,coolant_temp,0,degC=raw-50,CONFIRMED,must match 0x23D b7 or gauge pegs low
-0x231,xterra_chassis,engine_status_SES,,toggling toggles SES light,PARTIAL,full decode TODO
+0x551,xterra_chassis,coolant_temp_gateway,0,DLC7; degC=raw-50,CONFIRMED,gateway sends DLC7 copy; VDC/ABS REQUIRES this frame - do not remove
+0x231,xterra_chassis,engine_status_SES,,toggling toggles SES light,PARTIAL,SES currently gateway-driven not real MIL; decode TODO
 0x23E,xterra_chassis,throttle_torque,,NOT rpm,CONFIRMED,zero at engine-off
 0x29E,xterra_chassis,presence,,working payload,PROVISIONAL,clears U1000
 0x2A5,xterra_chassis,presence,,working payload,PROVISIONAL,clears U1000
-0x551,xterra_chassis,presence,,working payload,PROVISIONAL,clears U1000
 0x794,xterra_chassis,presence,,working payload,PROVISIONAL,clears U1000
-0x354,xterra_chassis,brake_stoplamp,byte6 bit 0x10,flag,PROVISIONAL,toggled on brake press in Frontier capture
+0x354,xterra_chassis,brake_stoplamp_speed,byte6 bit 0x10,flag; DBC SPEED_BREAK,PROVISIONAL,brake bit toggled on brake press; DBC also has SPEED_MPH here
+0x280,xterra_chassis,vehicle_speed_2011dbc,4-5,LE 0.01 km/h (2011 DBC),PROVISIONAL,2005 layout differs; ECM reads chassis speed but 2005 native frame not decoded

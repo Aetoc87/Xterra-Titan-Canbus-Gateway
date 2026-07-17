@@ -58,14 +58,29 @@ The gateway reads the Titan ECM's engine speed and rewrites it for the chassis:
 If no `0x180` is seen for 500 ms (ECM off/disconnected) the tach falls to 0 rather
 than freezing on a stale value.
 
+## ECT translation (live)
+
+The gateway reads the Titan ECM's coolant from **0x551 byte0 (DLC 8), degC =
+raw - 40**, and writes it to the Xterra cluster on **0x233 b0 AND 0x23D b7
+(mirror), degC = raw - 50** — a net **+10** offset on the raw byte. The RX path
+filters 0x551 to DLC 8 so the gateway reads the Titan's frame, not its own DLC-7
+copy (see below). If the Titan 0x551 goes stale for 2 s, ECT falls back to ~90 C.
+
+## 0x551 is required by VDC (do not remove)
+
+The gateway sends its own **DLC-7 0x551** presence frame with coolant in byte0.
+The VDC/ABS reads something from this frame — removing it causes a slip light and
+blocks steering-angle-sensor reset. Both the gateway (DLC 7) and the Titan ECM
+(DLC 8) transmit 0x551; they coexist in practice, and the DLC difference lets the
+gateway's RX ignore its own echo.
+
 ## What's still provisional
 
-- **ECT** is a fixed ~90 C placeholder (written to 0x233 b0 + 0x23D b7). Making it
-  live needs the Titan ECM's coolant frame decoded; the Xterra-side encoding
-  (degC = raw - 50) is confirmed.
 - The presence-frame payloads are working values, but most are not individually
   decoded — they satisfy the chassis comms checks, not necessarily carrying
   meaningful signal content.
+- The SES light (0x231) is currently driven by the gateway rather than a real
+  ECM MIL bit — to be made off-by-default then wired to the real MIL.
 
 ## Safety boundaries
 
